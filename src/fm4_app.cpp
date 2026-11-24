@@ -141,7 +141,28 @@ static void MountCachePartition(rex::Runtime* runtime, const std::filesystem::pa
   REXLOG_INFO("Mounted cache: at {}", host_path.string());
 }
 
+// An original USA Disc 1 is run with Title Update 4 applied (tools/fm4tu).
+// The console mounts the update's Disc 1 folder as update:, where the game
+// reads media.zip (database patches, strings, textures); fm4tu extracts it to
+// <game>\TitleUpdate. USA Rev 1 has those changes on the disc and no folder.
+static void MountTitleUpdate(rex::Runtime* runtime, const std::filesystem::path& game_root) {
+  constexpr char kMountPath[] = "\\Device\\Fm4TitleUpdate";
+  const auto host_path = game_root / "TitleUpdate";
+  std::error_code ec;
+  if (!std::filesystem::exists(host_path / "media.zip", ec)) return;
+  auto device = std::make_unique<rex::filesystem::HostPathDevice>(kMountPath, host_path, true);
+  auto* fs = runtime->file_system();
+  if (!device->Initialize() || !fs->RegisterDevice(std::move(device)) ||
+      !fs->RegisterSymbolicLink("update:", kMountPath)) {
+    REXLOG_ERROR("Could not mount update: at {}", host_path.string());
+    return;
+  }
+  REXLOG_INFO("Mounted update: (Title Update 4) at {}", host_path.string());
+}
+
 void Fm4App::OnPostLoadXexImage() {
+  // Before any guest code runs, so the game's first update: probe sees it.
+  MountTitleUpdate(runtime(), game_data_root());
   fm4::ResignProtectedFiles(runtime(), game_data_root());
   fm4::cheats::PatchImage(runtime());
 }

@@ -52,6 +52,24 @@ DiscKind IdentifyIso(const std::filesystem::path& iso);
 bool ExtractPlayDisc(const std::filesystem::path& iso, const std::filesystem::path& game_dir,
                      TaskProgress& progress);
 
+// Copies an extracted Disc 1 of the original USA pressing (media 26FF1101)
+// into `game_dir` and prepares it with Title Update 4 (`update`, the
+// tu00000008_00000000 package) using fm4tu next to the launcher: patched
+// default.xex, TitleUpdate\ for update: and the update's LeMans patch file.
+// The source folder is never modified. See doc/title-update.md.
+bool InstallPlayDiscFolder(const std::filesystem::path& folder, const std::filesystem::path& update,
+                           const std::filesystem::path& game_dir, const std::filesystem::path& fm4tu,
+                           TaskProgress& progress);
+
+// True for a game folder prepared by InstallPlayDiscFolder.
+bool IsTitleUpdateInstall(const std::filesystem::path& game_dir);
+
+// The USA Rev 1 manifest adjusted with game_files_usa_tu4.sha256: its entries
+// replace Rev 1's, and `absent <path>` lines drop files the original disc
+// does not have.
+std::vector<ManifestEntry> ApplyManifestOverlay(std::vector<ManifestEntry> manifest,
+                                                const std::filesystem::path& overlay);
+
 // Installs the content install disc: its 4 packages are copied out of the
 // image into a staging folder, then fm4tool (next to the launcher) installs
 // them into `user_dir` the way the game reads them - files plus a license

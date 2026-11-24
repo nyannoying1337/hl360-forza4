@@ -12,7 +12,7 @@ Set-Location $root
 $notes = "doc\releases\$Version.md"
 if (-not (Test-Path $notes)) { throw "Missing release notes: $notes" }
 $build = Join-Path $root $BuildDir
-foreach ($exe in "fm4.exe", "fm4-launcher.exe", "fm4tool.exe", "fm4-wheel-probe.exe") {
+foreach ($exe in "fm4.exe", "fm4-launcher.exe", "fm4tool.exe", "fm4tu.exe", "fm4-wheel-probe.exe") {
     if (-not (Test-Path (Join-Path $build $exe))) { throw "Missing $exe in $BuildDir; build release first" }
 }
 
@@ -25,7 +25,7 @@ New-Item -ItemType Directory -Force $dest, "$dest\doc\img", "$dest\doc\releases"
 Get-ChildItem $build -File | Where-Object {
     $_.Extension -in ".exe", ".dll" -and $_.Name -notlike "*-tests.exe"
 } | Copy-Item -Destination $dest
-foreach ($f in "fm4.toml", "game_files.sha256", "install-forza-plus.ps1", "uninstall-forza-plus.ps1") {
+foreach ($f in "fm4.toml", "game_files.sha256", "game_files_usa_tu4.sha256", "install-forza-plus.ps1", "uninstall-forza-plus.ps1") {
     Copy-Item (Join-Path $build $f) $dest
 }
 # DLSS and FSR 2/3 runtimes with NVIDIA's and AMD's licences.
@@ -45,6 +45,9 @@ Get-ChildItem doc\img -File | Copy-Item -Destination "$dest\doc\img"
 $sdkName = if ($SdkSource -match "shiftglue") { "ShiftGlue-SDK.txt" } else { "ReXGlue-SDK.txt" }
 Copy-Item (Join-Path $SdkSource "LICENSE") "$dest\licenses\$sdkName"
 Copy-Item (Join-Path $SdkSource "thirdparty\sdl3\LICENSE.txt") "$dest\licenses\SDL3\LICENSE.txt"
+# fm4tu links libmspack's LZX decoder (LGPL 2.1).
+New-Item -ItemType Directory -Force "$dest\licenses\libmspack" | Out-Null
+Copy-Item "thirdparty\mspack\COPYING.LIB" "$dest\licenses\libmspack\COPYING.LIB"
 
 # Checksums of every packaged file, then the archive and its own checksum.
 Push-Location $dest

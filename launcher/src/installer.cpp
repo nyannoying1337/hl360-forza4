@@ -386,6 +386,139 @@ bool ExtractPlayDisc(const fs::path& iso, const fs::path& game_dir, TaskProgress
   return true;
 }
 
+bool InstallPlayDiscFolder(const fs::path& folder, const fs::path& update, const fs::path& game_dir,
+                           const fs::path& fm4tu, TaskProgress& progress) {
+  std::error_code ec;
+  if (!fs::is_regular_file(folder / "default.xex", ec) || !fs::is_directory(folder / "Media", ec)) {
+    progress.SetStatus(L("That folder is not an extracted Disc 1 (default.xex and Media are missing).",
+                         "Esa carpeta no es un Disco 1 extraído (faltan default.xex y Media)."));
+    return false;
+  }
+  if (!fs::is_regular_file(update, ec)) {
+    progress.SetStatus(std::string(L("Title update not found: ", "No se encuentra la actualización: ")) +
+                       update.u8string());
+    return false;
+  }
+  // The copy is the one that gets patched; the player's folder stays untouched.
+  const fs::path source_abs = fs::weakly_canonical(folder, ec), game_abs = fs::weakly_canonical(game_dir, ec);
+  const std::string inside = game_abs.lexically_relative(source_abs).generic_u8string();
+  if (fs::equivalent(folder, game_dir, ec) || inside == "." || (!inside.empty() && inside.rfind("..", 0) != 0)) {
+    progress.SetStatus(L("Choose a different game folder: the extracted disc is copied there first.",
+                         "Elige otra carpeta de juego: primero se copia allí el disco extraído."));
+    return false;
+  }
+
+  struct Item {
+    fs::path from;
+    std::string rel;
+    uint64_t size;
+  };
+  std::vector<Item> items;
+  uint64_t total = 0;
+  progress.SetStatus(L("Reading the folder...", "Leyendo la carpeta..."));
+  for (auto it = fs::recursive_directory_iterator(folder, ec); !ec && it != fs::recursive_directory_iterator();
+       it.increment(ec)) {
+    if (!it->is_regular_file(ec)) continue;
+    std::string rel = fs::relative(it->path(), folder, ec).generic_u8string();
+    if (ec || rel.rfind("$SystemUpdate/", 0) == 0 || !IsSafeRelativePath(rel)) continue;
+    const uint64_t size = it->file_size(ec);
+    items.push_back({it->path(), std::move(rel), size});
+    total += size;
+  }
+  if (ec) {
+    progress.SetStatus(std::string(L("Cannot read ", "No se puede leer ")) + folder.u8string());
+    return false;
+  }
+  progress.total = total;
+  progress.done = 0;
+  fs::create_directories(game_dir, ec);
+  const auto space = fs::space(game_dir, ec);
+  if (!ec && space.available < total) {
+    progress.SetStatus(std::string(L("Not enough space: ", "No hay espacio suficiente: ")) + FormatGb(total) +
+                       L(" needed, ", " necesarios, ") + FormatGb(space.available) + L(" free.", " libres."));
+    return false;
+  }
+  // A previous preparation is replaced as a whole.
+  fs::remove_all(game_dir / ".fm4-tu", ec);
+  fs::remove_all(game_dir / "TitleUpdate", ec);
+  std::vector<char> buffer(8u << 20);
+  for (const Item& item : items) {
+    if (progress.cancel) {
+      progress.SetStatus(L("Cancelled.", "Cancelado."));
+      return false;
+    }
+    progress.SetStatus(std::string(L("Copying ", "Copiando ")) + item.rel);
+    const fs::path out_path = game_dir / fs::u8path(item.rel);
+    fs::create_directories(out_path.parent_path(), ec);
+    std::ifstream in(item.from, std::ios::binary);
+    std::ofstream out(out_path, std::ios::binary | std::ios::trunc);
+    if (!in || !out) {
+      progress.SetStatus(std::string(L("Cannot copy ", "No se puede copiar ")) + item.rel);
+      return false;
+    }
+    while (in && !progress.cancel) {
+      in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+      const auto got = in.gcount();
+      if (got <= 0) break;
+      out.write(buffer.data(), got);
+      progress.done += uint64_t(got);
+    }
+    if (!out) {
+      progress.SetStatus(std::string(L("Error writing ", "Error escribiendo ")) + out_path.u8string() +
+                         L(" (disk full?).", " (¿disco lleno?)."));
+      return false;
+    }
+  }
+  if (progress.cancel) return false;
+
+  progress.SetStatus(L("Applying Title Update 4...", "Aplicando la Title Update 4..."));
+  std::string last;
+  const int code = RunTool(fm4tu, {"apply", game_dir.u8string(), update.u8string()},
+                           [&](const std::string& line) {
+                             if (line.empty()) return;
+                             last = line;
+                             progress.SetStatus(line);
+                           },
+                           progress);
+  if (code != 0) {
+    if (code > 0) {
+      progress.SetStatus(std::string(L("Title Update 4 could not be applied: ",
+                                       "No se pudo aplicar la Title Update 4: ")) + last);
+    }
+    return false;
+  }
+  return true;
+}
+
+bool IsTitleUpdateInstall(const fs::path& game_dir) {
+  std::error_code ec;
+  return fs::exists(game_dir / ".fm4-tu" / "prepared", ec);
+}
+
+std::vector<ManifestEntry> ApplyManifestOverlay(std::vector<ManifestEntry> manifest, const fs::path& overlay) {
+  auto find = [&](const std::string& path) {
+    return std::find_if(manifest.begin(), manifest.end(), [&](const ManifestEntry& e) {
+      return SDL_strcasecmp(e.path.c_str(), path.c_str()) == 0;
+    });
+  };
+  for (const ManifestEntry& entry : LoadManifest(overlay)) {
+    auto it = find(entry.path);
+    if (it == manifest.end()) manifest.push_back(entry); else *it = entry;
+  }
+  // `absent <path>`: a Rev 1 file the original disc does not have (the update
+  // supplies it through update:). LoadManifest skips these lines.
+  std::ifstream in(overlay);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.rfind("absent ", 0) != 0) continue;
+    std::string path = line.substr(7);
+    if (!path.empty() && path.back() == '\r') path.pop_back();
+    auto it = find(path);
+    if (it != manifest.end()) manifest.erase(it);
+  }
+  return manifest;
+}
+
 bool InstallContentDisc(const fs::path& iso, const fs::path& game_dir, const fs::path& user_dir,
                         const fs::path& tool, TaskProgress& progress) {
   std::ifstream in(iso, std::ios::binary);

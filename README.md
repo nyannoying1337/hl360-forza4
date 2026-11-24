@@ -33,6 +33,8 @@ The following exact disc images were used for development:
 | Disc 1 — Play Disc, USA Rev 1 | 8,738,846,720 bytes | `2470358250b8566bf5ddc3aaf1b76c68` |
 | Disc 2 — Content Install Disc, USA Rev 1 | 8,738,846,720 bytes | `9915d1adaabf3b58441651a70e5e8dbe` |
 
+The original USA pressing (media ID `26FF1101`) also works when prepared with **Title Update 4**: it then runs the same executable code. Install it from an extracted Disc 1 folder and the update package under **Install → Step 1 (alternative)**; see [original USA disc + Title Update 4](doc/title-update.md).
+
 These hashes identify the **uncompressed ISO files**, not their ZIP archives. The installer also checks the installed Disc 1 files against a SHA-256 manifest. Other regions and revisions have not been validated. Additional hashes and the tested SDK revision are recorded in [doc/inputs.md](doc/inputs.md).
 
 ## Getting started

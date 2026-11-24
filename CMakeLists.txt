@@ -3,7 +3,7 @@
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
-project(fm4 LANGUAGES CXX)
+project(fm4 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -75,6 +75,12 @@ if(WIN32)
 endif()
 add_executable(fm4tool tools/fm4tool/main.cpp)
 target_link_libraries(fm4tool PRIVATE rex::runtime rex::kernel rex::system)
+# Prepares an original USA Disc 1 with Title Update 4 (doc/title-update.md).
+# Standalone: libmspack's LZX decoder plus the launcher's SHA-256, no SDK.
+add_executable(fm4tu tools/fm4tu/main.cpp launcher/src/sha256.cpp thirdparty/mspack/lzxd.c)
+target_include_directories(fm4tu PRIVATE thirdparty/mspack)
+target_compile_definitions(fm4tu PRIVATE HAVE_STRING_H=1 HAVE_LIMITS_H=1 HAVE_INTTYPES_H=1 _CRT_SECURE_NO_WARNINGS)
+set_target_properties(fm4tu PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_custom_command(TARGET fm4 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_CURRENT_SOURCE_DIR}/config/fm4.toml $<TARGET_FILE_DIR:fm4>)
@@ -112,10 +118,11 @@ target_link_libraries(fm4-launcher PRIVATE SDL3::SDL3-static dbghelp)
 target_compile_options(fm4-launcher PRIVATE -gline-tables-only)
 target_link_options(fm4-launcher PRIVATE -g)
 set_target_properties(fm4-launcher PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
-add_dependencies(fm4-launcher fm4tool)
+add_dependencies(fm4-launcher fm4tool fm4tu)
 add_custom_command(TARGET fm4-launcher POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_CURRENT_SOURCE_DIR}/launcher/data/game_files.sha256
+        ${CMAKE_CURRENT_SOURCE_DIR}/launcher/data/game_files_usa_tu4.sha256
         ${CMAKE_CURRENT_SOURCE_DIR}/config/fm4.toml
         $<TARGET_FILE_DIR:fm4-launcher>)
 configure_file(scripts/install-forza-plus.ps1 ${CMAKE_CURRENT_BINARY_DIR}/install-forza-plus.ps1 COPYONLY)

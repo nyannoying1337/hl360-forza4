@@ -656,6 +656,9 @@ struct App {
   std::optional<std::string> picked_game_folder;
   std::optional<std::string> picked_user_folder;
   std::optional<std::string> picked_plus_zip, picked_plus_update;
+  // Extracted original USA Disc 1 + Title Update 4: folder first, then the package.
+  std::optional<std::string> picked_disc1_folder, picked_title_update;
+  std::string pending_disc1_folder;
   std::optional<std::vector<std::string>> picked_content;
   std::string plus_zip, plus_update;
   int plus_mode = 0;
@@ -754,9 +757,11 @@ struct App {
     Save();
   }
 
-  // FM4 always verifies the original Disc 1 manifest.
+  // FM4 always verifies the original Disc 1 manifest; an original USA disc
+  // prepared with Title Update 4 swaps in the files that differ from Rev 1.
   std::vector<ManifestEntry> VerifyManifest(const fs::path& dir) const {
-    auto out = manifest;
+    auto out = IsTitleUpdateInstall(dir) ? ApplyManifestOverlay(manifest, exe_dir / "game_files_usa_tu4.sha256")
+                                         : manifest;
     if (fs::exists(dir / ".fm4-plus-ready")) {
       for (const auto& mod : LoadManifest(dir / ".fm4-plus.sha256")) {
         // The mod never supplies executable code or the port's render scenarios.
@@ -861,9 +866,12 @@ struct App {
                         : !report.wrong_size.empty() ? report.wrong_size
                                                      : report.wrong_hash;
     if (!first.empty()) text += std::string(L("\nFirst: ", "\nPrimero: ")) + first.front();
-    if (std::find(report.wrong_hash.begin(), report.wrong_hash.end(), "default.xex") != report.wrong_hash.end()) {
-      text += L("\ndefault.xex does not match: the port was built from the USA Rev 1 disc.",
-                "\ndefault.xex no coincide: el port se hizo con el disco USA Rev 1.");
+    if (std::find(report.wrong_hash.begin(), report.wrong_hash.end(), "default.xex") != report.wrong_hash.end() ||
+        std::find(report.wrong_size.begin(), report.wrong_size.end(), "default.xex") != report.wrong_size.end()) {
+      text += L("\ndefault.xex does not match: the port was built from the USA Rev 1 disc. For the original "
+                "USA disc, use 'Original USA disc + Title Update 4'.",
+                "\ndefault.xex no coincide: el port se hizo con el disco USA Rev 1. Para el disco USA "
+                "original, usa 'Disco USA original + Title Update 4'.");
     }
     task.SetStatus(text);
     return false;
@@ -894,6 +902,22 @@ struct App {
                              "Esa imagen no es un disco de Forza Motorsport 4 USA Rev 1: ")) +
                iso.filename().u8string();
     }
+  }
+
+  // Disc 1 from an extracted folder of the original USA disc plus Title Update 4.
+  void StartFolderImport(const fs::path& folder, const fs::path& update) {
+    Save();
+    const fs::path game_dir = GameDir();
+    StartTask(L("Disc 1 (folder + Title Update 4)", "Disco 1 (carpeta + Title Update 4)"), TaskKind::kPlayDisc,
+              [this, folder, update, game_dir] {
+                import_step = 1;
+                std::error_code ec;
+                fs::remove(VerifiedMarker(game_dir), ec);
+                if (!InstallPlayDiscFolder(folder, update, game_dir, exe_dir / "fm4tu.exe", task) || task.cancel)
+                  return false;
+                import_step = 2;
+                return RunVerify(game_dir);
+              });
   }
 
   bool ContentIsInstalled(const std::string& file_name) const {
@@ -2517,6 +2541,18 @@ void PickIso(App& app) {
       &app, app.window, filters, 2, nullptr, false);
 }
 
+// Title Update 4 of the original USA disc (26FF1101\tu00000008_00000000).
+void PickTitleUpdate(App& app) {
+  SDL_ShowOpenFileDialog(
+      [](void* user, const char* const* files, int) {
+        auto* a = static_cast<App*>(user);
+        std::lock_guard lock(a->dialog_mutex);
+        if (files && files[0]) a->picked_title_update = files[0];
+        else a->pending_disc1_folder.clear();
+      },
+      &app, app.window, nullptr, 0, nullptr, false);
+}
+
 void PickFolder(App& app, std::optional<std::string> App::*slot) {
   struct Request {
     App* app;
@@ -2715,6 +2751,28 @@ void TabInstall(App& app) {
              app.Installed(), true, disc1_state,
              app.Installed() ? L("Reinstall Disc 1...", "Reinstalar Disco 1...")
                              : L("Choose Disc 1 ISO and install", "Elegir ISO del Disco 1 e instalar"));
+
+  // Original USA pressing: an extracted Disc 1 plus Title Update 4 gives the same executable.
+  BeginCard("##disc1tu", L("Step 1 (alternative) · Original USA disc + Title Update 4",
+                           "Paso 1 (alternativa) · Disco USA original + Title Update 4"),
+            L("For the first USA pressing (media ID 26FF1101). Pick the extracted Disc 1 folder, then the "
+              "Title Update 4 package (26FF1101\\tu00000008_00000000). The folder is copied to the game "
+              "folder and patched there; your files are not changed.",
+              "Para la primera edición USA (media ID 26FF1101). Elige la carpeta del Disco 1 extraído y "
+              "después el paquete Title Update 4 (26FF1101\\tu00000008_00000000). La carpeta se copia a la "
+              "carpeta del juego y se parchea allí; tus archivos no se modifican."));
+  if (IsTitleUpdateInstall(app.GameDir())) {
+    StatusDot(kOk);
+    ImGui::TextUnformatted(L("Installed from the original disc with Title Update 4",
+                             "Instalado desde el disco original con la Title Update 4"));
+  }
+  ImGui::BeginDisabled(app.TaskRunning() || app.game || app.PlusActive());
+  if (ImGui::Button(L("Choose Disc 1 folder + Title Update...", "Elegir carpeta del Disco 1 + Title Update..."),
+                    ImVec2(S(380), S(36)))) {
+    PickFolder(app, &App::picked_disc1_folder);
+  }
+  ImGui::EndDisabled();
+  EndCard();
 
   const bool content_done = app.ContentInstalled();
   char content_state[128];
@@ -3006,16 +3064,20 @@ void ApplyStyle() {
 //   fm4-launcher --import-iso <iso> --game-dir <dir> --user-dir <dir> [--log <file>]
 //     Disc 1: extract + full verification. Disc 2: content install (needs Disc 1
 //     in --game-dir). The disc is detected from the image.
+//   fm4-launcher --import-disc1-folder <dir> --title-update <tu00000008_00000000> --game-dir <dir> [--log <file>]
+//     Original USA Disc 1 (extracted) + Title Update 4: copy, patch with fm4tu, full verification.
 //   fm4-launcher --verify --game-dir <dir> [--log <file>]
 //                --game-dir <dir> --user-dir <dir> [--log <file>]
 // Same code paths as the UI; prints progress to the log, exit code 0 = ok.
 int RunHeadless(int argc, char** argv) {
-  std::string iso, dir, user_dir, log_path;
+  std::string iso, dir, user_dir, log_path, disc1_folder, title_update;
   bool verify_only = false;
   int race_shadows = 0;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--import-iso" && i + 1 < argc) iso = argv[++i];
+    else if (a == "--import-disc1-folder" && i + 1 < argc) disc1_folder = argv[++i];
+    else if (a == "--title-update" && i + 1 < argc) title_update = argv[++i];
     else if (a == "--game-dir" && i + 1 < argc) dir = argv[++i];
     else if (a == "--user-dir" && i + 1 < argc) user_dir = argv[++i];
     else if (a == "--log" && i + 1 < argc) log_path = argv[++i];
@@ -3050,7 +3112,12 @@ int RunHeadless(int argc, char** argv) {
   const auto start = std::chrono::steady_clock::now();
   bool ok = true;
   bool verify = verify_only;
-  if (!verify_only) {
+  if (!verify_only && !disc1_folder.empty()) {
+    ok = InstallPlayDiscFolder(fs::u8path(disc1_folder), fs::u8path(title_update), fs::u8path(dir),
+                               exe_dir / "fm4tu.exe", progress);
+    verify = ok;
+    log << "disc 1 folder + title update: " << (ok ? "ok" : "FAILED") << " - " << progress.Status() << std::endl;
+  } else if (!verify_only) {
     const DiscKind kind = IdentifyIso(fs::u8path(iso));
     log << "disc: " << (kind == DiscKind::kPlay ? "play" : kind == DiscKind::kContent ? "content" : "unknown")
         << std::endl;
@@ -3074,6 +3141,7 @@ int RunHeadless(int argc, char** argv) {
   }
   if (ok && verify) {
     App verifier;
+    verifier.exe_dir = exe_dir;
     verifier.manifest = manifest;
     verifier.settings.game_data_root = dir;
     verifier.settings.user_data_root = user_dir;
@@ -3113,7 +3181,7 @@ int main(int argc, char** argv) {
   fm4::InstallCrashHandler(fs::u8path(SDL_GetBasePath()) / "logs");
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
-    if (a == "--import-iso" || a == "--verify" || a == "--race-shadows") {
+    if (a == "--import-iso" || a == "--import-disc1-folder" || a == "--verify" || a == "--race-shadows") {
       return RunHeadless(argc, argv);
     }
   }
@@ -3267,6 +3335,7 @@ int main(int argc, char** argv) {
     }
 
     // Results from file dialogs.
+    bool ask_title_update = false;
     {
       std::lock_guard lock(app.dialog_mutex);
       if (app.picked_game_folder) {
@@ -3287,6 +3356,20 @@ int main(int argc, char** argv) {
         app.picked_iso.reset();
         app.StartImport(iso);
       }
+      if (app.picked_disc1_folder) {
+        app.pending_disc1_folder = *app.picked_disc1_folder;
+        app.picked_disc1_folder.reset();
+        ask_title_update = true;
+      }
+      if (app.picked_title_update) {
+        const fs::path update = fs::u8path(*app.picked_title_update);
+        app.picked_title_update.reset();
+        if (!app.pending_disc1_folder.empty()) {
+          const fs::path folder = fs::u8path(app.pending_disc1_folder);
+          app.pending_disc1_folder.clear();
+          app.StartFolderImport(folder, update);
+        }
+      }
       if (app.picked_plus_zip) { app.plus_zip = *app.picked_plus_zip; app.picked_plus_zip.reset(); }
       if (app.picked_plus_update) { app.plus_update = *app.picked_plus_update; app.picked_plus_update.reset(); }
       if (app.picked_content) {
@@ -3295,6 +3378,7 @@ int main(int argc, char** argv) {
         app.ScanPickedContent(paths);
       }
     }
+    if (ask_title_update) PickTitleUpdate(app);  // outside the lock: SDL may call back right away
     static TaskProgress::State last_state = TaskProgress::State::kIdle;
     if (last_state == TaskProgress::State::kRunning && !app.TaskRunning()) {
       if (app.task_kind == App::TaskKind::kForzaPlus && app.task.state == TaskProgress::State::kDone)
